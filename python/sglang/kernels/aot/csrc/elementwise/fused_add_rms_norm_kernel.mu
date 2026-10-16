@@ -433,19 +433,12 @@
         for (size_t j = n_idx; j < N; j += n_step) {
           ComputeVec x_vec;
           SrcVec curr, res_vec, fused_vec;
-          #if ((defined __MUSA_ARCH__) && (__MUSA_ARCH__ == 220))
-              curr = *(SrcVec *)(p_src+j);
-              res_vec = *(SrcVec *)(p_res+j);
-          #elif ((defined __MUSA_ARCH__) && (__MUSA_ARCH__ == 310))
+          #if ((defined __MUSA_ARCH__) && (__MUSA_ARCH__ == 310))
               curr = SrcVec::load_byp_slc(p_src, j);
               res_vec = SrcVec::load_byp_slc(p_res, j);
-          #elif ((defined __MUSA_ARCH__) && (__MUSA_ARCH__ == 420))
-              //  TODO: use LS specific load inst
-              curr = *(SrcVec *)(p_src+j);
-              res_vec = *(SrcVec *)(p_res+j);
           #else
-              curr = *(SrcVec *)(p_src + j);
-              res_vec = *(SrcVec *)(p_res + j);
+              curr = SrcVec::load(p_src, j);
+              res_vec = SrcVec::load(p_res, j);
           #endif
           #pragma unroll
           for (int k = 0; k < vlen; k++) {
@@ -475,12 +468,10 @@
             SrcVec weight_val, dst;
             ComputeVec x_vec;
             x_vec = *(ComputeVec *)(smem + j);
-            #if ((defined __MUSA_ARCH__) && (__MUSA_ARCH__ == 220))
-              weight_val = *(SrcVec *)(weight + j);
-            #elif ((defined __MUSA_ARCH__) && (__MUSA_ARCH__ == 310))
+            #if ((defined __MUSA_ARCH__) && (__MUSA_ARCH__ == 310))
               weight_val = SrcVec::load_byp_slc(weight, j);
-            #elif ((defined __MUSA_ARCH__) && (__MUSA_ARCH__ == 420))
-              weight_val = *(SrcVec *)(weight + j);
+            #else
+              weight_val = SrcVec::load(weight, j);
             #endif
     #pragma unroll
             for (int k = 0; k < vlen; k++) {
