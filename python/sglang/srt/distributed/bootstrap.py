@@ -215,6 +215,20 @@ def measure_pre_model_load_memory(*, device: str, is_draft_worker: bool) -> floa
 
 def _resolve_backend(*, device: str) -> str:
     backend = get_default_distributed_backend(device)
+
+    # A single-rank MUSA process does not perform device collectives.  Use the
+    # CPU-only Gloo backend so environments without torchada's MCCL backend can
+    # still run single-card inference.  Keep MCCL for tensor/pipeline parallel
+    # jobs, where device collectives are required.
+    parallel = get_parallel()
+    if (
+        device == "musa"
+        and parallel.tp_size == 1
+        and parallel.pp_size == 1
+        and backend == "mccl"
+    ):
+        backend = "gloo"
+
     if device == "cuda" and get_exec().moe.elastic_ep_backend == "mooncake":
         backend = "mooncake"
     return backend
