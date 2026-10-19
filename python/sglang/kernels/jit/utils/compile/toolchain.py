@@ -22,7 +22,7 @@ from typing import List, Tuple
 import torch
 
 from sglang.kernels.jit.utils.arch import get_jit_cuda_arch
-from sglang.kernels.jit.utils.common import cache_once, is_hip_runtime
+from sglang.kernels.jit.utils.common import cache_once, is_hip_runtime, is_musa_runtime
 
 logger = logging.getLogger(__name__)
 
@@ -63,12 +63,36 @@ def rocm_home() -> str:
 
 
 @cache_once
-def device_compiler_path() -> str:
-    """The nvcc/hipcc that JIT builds actually invoke.
+def musa_home() -> str:
+    """MUSA install root, without importing the device-initializing build helpers."""
+    configured = os.environ.get("MUSA_HOME") or os.environ.get("MUSA_PATH")
+    if configured is not None:
+        return configured
+    mcc_path = shutil.which("mcc")
+    if mcc_path is not None:
+        return os.path.dirname(os.path.dirname(mcc_path))
+    return "/usr/local/musa"
 
-    Resolved the same way tvm-ffi resolves it, so the binary the cache
-    fingerprints is the binary that does the compiling.
+
+@cache_once
+def musa_lib_dir() -> str:
+    """MUSA toolkits may install the runtime under either lib64 or lib."""
+    root = pathlib.Path(musa_home())
+    if not (root / "lib64").is_dir() and (root / "lib").is_dir():
+        return str(root / "lib")
+    return str(root / "lib64")
+
+
+@cache_once
+def device_compiler_path() -> str:
+    """The nvcc/hipcc/mcc that JIT builds actually invoke.
+
+    The binary the cache fingerprints must be the binary that does the compiling.
+    MUSA must be checked explicitly: it is not a CUDA compiler even when
+    torchada exposes the device through torch.cuda aliases.
     """
+    if is_musa_runtime():
+        return os.path.join(musa_home(), "bin", "mcc")
     if is_hip_runtime():
         return os.path.join(rocm_home(), "bin", "hipcc")
     return os.path.join(cuda_home(), "bin", "nvcc")
@@ -104,7 +128,7 @@ def gpu_arch_name() -> str:
 
 @cache_once
 def toolkit_home() -> pathlib.Path:
-    """The CUDA/ROCm root, derived from the compiler already resolved."""
+    """The CUDA/ROCm/MUSA root, derived from the compiler already resolved."""
     return pathlib.Path(device_compiler_path()).parent.parent
 
 
@@ -129,6 +153,9 @@ def target_flags() -> List[str]:
     the compiler driver to probe: the value is part of the cache key, so it has
     to be decided here and not rediscovered at build time.
     """
+    if is_musa_runtime():
+        arch = get_jit_cuda_arch()
+        return [f"--cuda-gpu-arch=mp_{arch.major}{arch.minor}"]
     if is_hip_runtime():
         return [f"--offload-arch={gpu_arch_name()}"]
     arch = get_jit_cuda_arch()
@@ -147,6 +174,9 @@ def base_cxx_flags() -> List[str]:
 
 
 def base_cuda_flags() -> List[str]:
+    if is_musa_runtime():
+        # Wrappers retain the .cu suffix, so select the MUSA language explicitly.
+        return ["-fPIC", "-x", "musa", "-mtgpu"]
     if is_hip_runtime():
         return ["-fPIC", "-D__HIP_PLATFORM_AMD__=1", "-fno-gpu-rdc"]
     return ["-Xcompiler", "-fPIC"]
@@ -154,6 +184,8 @@ def base_cuda_flags() -> List[str]:
 
 def base_include_paths() -> List[str]:
     includes, _, _ = tvm_ffi_paths()
+    if is_musa_runtime():
+        return [*includes, f"{musa_home()}/include"]
     if is_hip_runtime():
         return [*includes, f"{rocm_home()}/include"]
     return list(includes)
@@ -170,6 +202,8 @@ def base_link_flags(*, with_device: bool) -> List[str]:
     flags = ["-shared", f"-L{lib_dir}", f"-l{lib_name}"]
     if not with_device:
         return flags
+    if is_musa_runtime():
+        return flags + [f"-L{musa_lib_dir()}", "-lmusart"]
     if is_hip_runtime():
         return flags + [f"-L{rocm_home()}/lib", "-lamdhip64"]
     return flags + [f"-L{cuda_home()}/lib64", "-lcudart"]

@@ -1,4 +1,4 @@
-"""CUDA/ROCm architecture detection and default compile target flags."""
+"""CUDA/ROCm/MUSA architecture detection and default compile target flags."""
 
 from __future__ import annotations
 
@@ -110,9 +110,35 @@ def _init_jit_cuda_arch_once():
     )
     _CUDA_ARCH = ArchInfo(major, minor, suffix)
 
+@cache_once
+def _init_jit_musa_arch_once():
+    global _MUSA_ARCH
+    try:
+        runtime = torch.musa if is_musa_runtime() else torch.cuda
+        device = runtime.current_device()
+        major, minor = runtime.get_device_capability(device)
+    except Exception:
+        logger.warning("Cannot detect MUSA architecture.")
+        major, minor = 0, 0  # invalid value to trigger compile error if used
+    # JIT builds target the exact local GPU, so the arch-specific target is
+    # always correct on Hopper+ and unlocks arch-only instructions (redux.f32).
+    # HIP/MUSA capability numbers aren't CUDA SM versions and stay unsuffixed.
+    suffix = (
+        ""
+        if (is_musa_runtime())
+        else _cuda_arch_suffix(major, minor)
+    )
+    _MUSA_ARCH = ArchInfo(major, minor, suffix)
+
 
 def get_default_target_flags(arch: ArchInfo | None = None) -> List[str]:
     """Default compile flags for `arch`, defaulting to the detected local GPU."""
+    if is_musa_runtime():
+        if arch is None:
+            arch = get_jit_musa_arch()
+        # Keep the shared arch macro for the converted headers, but do not pass
+        # nvcc-only options such as --expt-relaxed-constexpr to MCC.
+        return ["-DUSE_MUSA", arch.jit_flag, "-std=c++20", "-O3"]
     if is_hip_runtime():
         flags = ["-DUSE_ROCM", "-std=c++20", "-O3"]
         # Detect FP8 type based on GPU architecture
@@ -174,6 +200,12 @@ def get_jit_cuda_arch() -> ArchInfo:
     return _CUDA_ARCH
 
 
+def get_jit_musa_arch() -> ArchInfo:
+    """Get the current MUSA architecture info."""
+    _init_jit_musa_arch_once()
+    return _MUSA_ARCH
+
+
 @cache_once
 def is_arch_support_pdl() -> bool:
     if is_hip_runtime() or is_musa_runtime():
@@ -183,6 +215,8 @@ def is_arch_support_pdl() -> bool:
 
 def get_activation_cuda_cflags() -> list[str]:
     """Match the AOT activation fast-math policy without changing other kernels."""
+    if is_musa_runtime():
+        return ["-ffast-math"]
     # Blackwell needs precise expf; HIP clang rejects --use_fast_math.
     if is_hip_runtime() or get_jit_cuda_arch().major >= 10:
         return []

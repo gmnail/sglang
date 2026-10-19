@@ -33,7 +33,7 @@
 #include <type_traits>
 #include <utility>
 
-#ifdef __CUDACC__
+#ifdef __MUSACC__
 #include <sgl_kernel/utils.cuh>
 #elif defined(__HIPCC__)
 #include <sgl_kernel/utils.cuh>
@@ -72,7 +72,7 @@ struct DLDataTypeTrait<T> {
       .code = DLDataTypeCode::kDLFloat, .bits = static_cast<std::uint8_t>(sizeof(T) * 8), .lanes = 1};
 };
 
-#ifdef __CUDACC__
+#ifdef __MUSACC__
 template <>
 struct DLDataTypeTrait<fp16_t> {
   inline static constexpr DLDataType value = {.code = DLDataTypeCode::kDLFloat, .bits = 16, .lanes = 1};
@@ -133,7 +133,18 @@ inline constexpr auto kDeviceStringMap = [] {
       std::pair{DLDeviceType::kDLMAIA, "maia"},
       std::pair{DLDeviceType::kDLTrn, "trn"},
   };
-  constexpr auto max_type = stdr::max(map | stdv::keys);
+
+  // MCC 5.3 with libstdc++ 12 crashes while checking the range-adaptor
+  // constraints in `map | stdv::keys`. Compute the same bound without views
+  // or copying the array of pairs, keeping the lookup table compile-time sized.
+  constexpr auto max_type = [](const auto& entries) {
+    std::size_t max_code = 0;
+    for (const auto& entry : entries) {
+      const auto code = static_cast<std::size_t>(entry.first);
+      if (code > max_code) max_code = code;
+    }
+    return max_code;
+  }(map);
   auto result = std::array<std::string_view, max_type + 1>{};
   for (const auto& [code, name] : map) {
     result[static_cast<std::size_t>(code)] = name;
